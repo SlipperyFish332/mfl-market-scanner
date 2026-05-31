@@ -1,6 +1,10 @@
 require("dotenv").config();
 
+const express = require("express");
 const axios = require("axios");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -8,16 +12,28 @@ const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK;
 
 const SCAN_INTERVAL = Number(process.env.SCAN_INTERVAL || 30000);
 
+const RULES = {
+  minSales: Number(process.env.MIN_SALES || 10),
+  minProfit: Number(process.env.MIN_PROFIT || 5),
+  minROI: Number(process.env.MIN_ROI || 25)
+};
+
 const MFL_API =
   "https://z519wdyajg.execute-api.us-east-1.amazonaws.com/prod/listings?limit=25&type=PLAYER&sorts=listing.createdDateTime&sortsOrders=DESC&status=AVAILABLE&view=full";
 
 const seenListings = new Set();
 
-const RULES = {
-  minSales: 10,
-  minProfit: 5,
-  minROI: 25
-};
+app.get("/", (req, res) => {
+  res.send("MFL Market Scanner Running");
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    scanner: "running",
+    time: new Date().toISOString()
+  });
+});
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -43,15 +59,25 @@ function extractPlayer(listing) {
     "";
 
   const positionText = Array.isArray(positions)
-    ? positions.map(p => (typeof p === "string" ? p : p.name)).filter(Boolean).join(", ")
-    : String(positions);
+    ? positions
+        .map(p => {
+          if (typeof p === "string") return p;
+          return p?.name || p?.position || p?.value || "";
+        })
+        .filter(Boolean)
+        .join(", ")
+    : String(positions || "");
+
+  const listingId =
+    listing.listingResourceId ||
+    listing.id ||
+    listing.listingId ||
+    listing._id ||
+    listing.resourceId ||
+    `${firstName}-${lastName}-${listing.price}-${metadata.overall}-${metadata.age}`;
 
   return {
-    id:
-      listing.listingResourceId ||
-      listing.id ||
-      listing.listingId ||
-      `${firstName}-${lastName}-${listing.price}`,
+    id: listingId,
 
     name:
       `${firstName} ${lastName}`.trim() ||
@@ -59,7 +85,7 @@ function extractPlayer(listing) {
       player.name ||
       "Unknown Player",
 
-    price: Number(listing.price ?? listing.listing?.price ?? 0),
+    price: Number(listing.price ?? listing.listing?.price ?? listing.listingPrice ?? 0),
 
     overall: Number(metadata.overall ?? player.overall ?? listing.overall ?? 0),
 
@@ -70,17 +96,19 @@ function extractPlayer(listing) {
     positionText,
 
     stats: {
-      pace: metadata.pace,
-      shooting: metadata.shooting,
-      passing: metadata.passing,
-      dribbling: metadata.dribbling,
-      defense: metadata.defense,
-      physical: metadata.physical
+      pace: metadata.pace ?? null,
+      shooting: metadata.shooting ?? null,
+      passing: metadata.passing ?? null,
+      dribbling: metadata.dribbling ?? null,
+      defense: metadata.defense ?? null,
+      physical: metadata.physical ?? null
     },
 
     url: player.slug
       ? `https://app.playmfl.com/players/${player.slug}`
-      : "https://app.playmfl.com/marketplace"
+      : player.id
+        ? `https://app.playmfl.com/players/${player.id}`
+        : "https://app.playmfl.com/marketplace"
   };
 }
 
@@ -97,7 +125,8 @@ async function getMarketValue(player) {
         apikey: SUPABASE_KEY,
         Authorization: `Bearer ${SUPABASE_KEY}`,
         "Content-Type": "application/json"
-      }
+      },
+      timeout: 15000
     }
   );
 
@@ -110,10 +139,17 @@ function evaluate(player, market) {
   const p25 = Number(market?.p25_price || 0);
   const p75 = Number(market?.p75_price || 0);
 
-  if (!sales || sales < RULES.minSales || !median || !p25 || !player.price) {
+  if (!sales || sales < RULES.minSales || !median || !p25 || !p75 || !player.price) {
     return {
       notify: false,
       tier: "NO DATA",
+      score: 0,
+      profit: 0,
+      roi: 0,
+      sales,
+      median,
+      p25,
+      p75,
       reason: "Not enough comparable sales"
     };
   }
@@ -199,10 +235,16 @@ async function sendDiscord(player, result) {
     });
   }
 
-  await axios.post(DISCORD_WEBHOOK, {
-    username: "MFL Market Scanner",
-    embeds: [embed]
-  });
+  await axios.post(
+    DISCORD_WEBHOOK,
+    {
+      username: "MFL Market Scanner",
+      embeds: [embed]
+    },
+    {
+      timeout: 15000
+    }
+  );
 }
 
 async function scanMarketplace() {
@@ -210,6 +252,7 @@ async function scanMarketplace() {
 
   try {
     const res = await axios.get(MFL_API, { timeout: 15000 });
+
     const listings = Array.isArray(res.data)
       ? res.data
       : res.data.listings || res.data.data || res.data.results || [];
@@ -220,6 +263,7 @@ async function scanMarketplace() {
       const player = extractPlayer(listing);
 
       if (!player.id || seenListings.has(player.id)) continue;
+
       seenListings.add(player.id);
 
       if (!player.price || !player.overall || !player.age || !player.position) {
@@ -250,7 +294,7 @@ async function scanMarketplace() {
   }
 }
 
-async function start() {
+async function startScanner() {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_KEY");
   }
@@ -268,4 +312,9 @@ async function start() {
   setInterval(scanMarketplace, SCAN_INTERVAL);
 }
 
-start();
+app.listen(PORT, () => {
+  console.log(`✅ Web server running on port ${PORT}`);
+  startScanner().catch(err => {
+    console.error("Scanner startup error:", err.message);
+  });
+});
