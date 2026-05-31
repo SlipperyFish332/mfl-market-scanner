@@ -83,18 +83,31 @@ function extractPlayer(listing) {
     listing.resourceId ||
     `${firstName}-${lastName}-${listing.price}-${metadata.overall}-${metadata.age}`;
 
+  const playerId =
+    player.id ||
+    player.playerId ||
+    metadata.id ||
+    metadata.playerId ||
+    listing.playerId ||
+    null;
+
   return {
-    id: listingId,
+    id: String(listingId),
+    playerId: playerId ? String(playerId) : null,
+
     name:
       `${firstName} ${lastName}`.trim() ||
       metadata.name ||
       player.name ||
       "Unknown Player",
+
     price: Number(listing.price ?? listing.listing?.price ?? listing.listingPrice ?? 0),
     overall: Number(metadata.overall ?? player.overall ?? listing.overall ?? 0),
     age: Number(metadata.age ?? player.age ?? listing.age ?? 0),
+
     position: primaryPosition(positionText),
     positionText,
+
     stats: {
       pace: metadata.pace ?? null,
       shooting: metadata.shooting ?? null,
@@ -103,6 +116,7 @@ function extractPlayer(listing) {
       defense: metadata.defense ?? null,
       physical: metadata.physical ?? null
     },
+
     url: player.slug
       ? `https://app.playmfl.com/players/${player.slug}`
       : player.id
@@ -111,25 +125,73 @@ function extractPlayer(listing) {
   };
 }
 
-async function getMarketValue(player) {
-  const res = await axios.post(
-    `${SUPABASE_URL}/rest/v1/rpc/get_mfl_market_value`,
-    {
-      p_overall: player.overall,
-      p_age: player.age,
-      p_position: player.position
+async function supabasePost(path, body) {
+  const res = await axios.post(`${SUPABASE_URL}${path}`, body, {
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json"
     },
-    {
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json"
-      },
-      timeout: 15000
-    }
+    timeout: 15000
+  });
+
+  return res.data;
+}
+
+async function supabaseGet(path) {
+  const res = await axios.get(`${SUPABASE_URL}${path}`, {
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`
+    },
+    timeout: 15000
+  });
+
+  return res.data;
+}
+
+async function getMarketValue(player) {
+  const data = await supabasePost("/rest/v1/rpc/get_mfl_market_value", {
+    p_overall: player.overall,
+    p_age: player.age,
+    p_position: player.position
+  });
+
+  return Array.isArray(data) ? data[0] : data;
+}
+
+async function cleanupOldAlerts() {
+  try {
+    await supabasePost("/rest/v1/rpc/cleanup_old_mfl_alerts", {});
+  } catch (err) {
+    console.error("Cleanup error:", err.message);
+  }
+}
+
+async function alreadyAlerted(player) {
+  const listingId = encodeURIComponent(player.id);
+  const price = encodeURIComponent(player.price);
+
+  const data = await supabaseGet(
+    `/rest/v1/mfl_alerted_listings?select=id&listing_id=eq.${listingId}&listed_price=eq.${price}&limit=1`
   );
 
-  return Array.isArray(res.data) ? res.data[0] : res.data;
+  return Array.isArray(data) && data.length > 0;
+}
+
+async function saveAlert(player, result) {
+  await supabasePost("/rest/v1/mfl_alerted_listings", {
+    listing_id: player.id,
+    player_id: player.playerId,
+    player_name: player.name,
+    listed_price: player.price,
+    overall: player.overall,
+    age: player.age,
+    position: player.position,
+    tier: result.tier,
+    profit: result.profit,
+    roi: result.roi
+  });
 }
 
 function evaluate(player, market) {
@@ -249,6 +311,8 @@ async function scanMarketplace() {
   console.log(`[${new Date().toLocaleTimeString()}] Scanning MFL marketplace...`);
 
   try {
+    await cleanupOldAlerts();
+
     const res = await axios.get(MFL_API, { timeout: 15000 });
 
     const listings = Array.isArray(res.data)
@@ -277,8 +341,15 @@ async function scanMarketplace() {
       );
 
       if (result.notify) {
-        await sendDiscord(player, result);
-        console.log(`🚨 Discord alert sent: ${player.name}`);
+        const seen = await alreadyAlerted(player);
+
+        if (seen) {
+          console.log(`Already alerted, skipping Discord: ${player.name} @ $${player.price}`);
+        } else {
+          await sendDiscord(player, result);
+          await saveAlert(player, result);
+          console.log(`🚨 Discord alert sent and saved: ${player.name}`);
+        }
       }
 
       await sleep(150);
@@ -303,6 +374,7 @@ async function startScanner() {
   console.log(`Min sales: ${RULES.minSales}`);
   console.log(`Min profit: $${RULES.minProfit}`);
   console.log(`Min ROI: ${RULES.minROI}%`);
+  console.log("Deduplication: Supabase mfl_alerted_listings");
   console.log("======================================");
 
   await scanMarketplace();
