@@ -13,9 +13,9 @@ const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK;
 const SCAN_INTERVAL = Number(process.env.SCAN_INTERVAL || 30000);
 
 const RULES = {
-  minSales: Number(process.env.MIN_SALES || 10),
-  minProfit: Number(process.env.MIN_PROFIT || 5),
-  minROI: Number(process.env.MIN_ROI || 25)
+  minSales: Number(process.env.MIN_SALES || 5),
+  minProfit: Number(process.env.MIN_PROFIT || 1),
+  minROI: Number(process.env.MIN_ROI || 10)
 };
 
 const MFL_API =
