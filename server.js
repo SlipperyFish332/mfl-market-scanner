@@ -18,8 +18,10 @@ const RULES = {
   minROI: Number(process.env.MIN_ROI || 10)
 };
 
+// Main filter added here:
+// hideNearRetirement=true
 const MFL_API =
-  "https://z519wdyajg.execute-api.us-east-1.amazonaws.com/prod/listings?limit=25&type=PLAYER&sorts=listing.createdDateTime&sortsOrders=DESC&status=AVAILABLE&view=full";
+  "https://z519wdyajg.execute-api.us-east-1.amazonaws.com/prod/listings?limit=25&type=PLAYER&sorts=listing.createdDateTime&sortsOrders=DESC&status=AVAILABLE&view=full&hideNearRetirement=true";
 
 const seenListings = new Set();
 
@@ -37,6 +39,7 @@ app.get("/health", (req, res) => {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Web server running on port ${PORT}`);
+
   startScanner().catch(err => {
     console.error("Scanner startup error:", err.message);
   });
@@ -49,6 +52,49 @@ function sleep(ms) {
 function primaryPosition(positionText) {
   if (!positionText) return "";
   return String(positionText).split(/[,/]/)[0].trim().toUpperCase();
+}
+
+function detectNearRetirement(listing, player, metadata) {
+  const checks = [
+    listing?.isNearRetirement,
+    listing?.nearRetirement,
+    listing?.retiring,
+    listing?.isRetiring,
+    listing?.willRetire,
+    listing?.retirement,
+    listing?.retirementStatus,
+
+    player?.isNearRetirement,
+    player?.nearRetirement,
+    player?.retiring,
+    player?.isRetiring,
+    player?.willRetire,
+    player?.retirement,
+    player?.retirementStatus,
+
+    metadata?.isNearRetirement,
+    metadata?.nearRetirement,
+    metadata?.retiring,
+    metadata?.isRetiring,
+    metadata?.willRetire,
+    metadata?.retirement,
+    metadata?.retirementStatus
+  ];
+
+  return checks.some(value => {
+    if (value === true) return true;
+
+    if (typeof value === "string") {
+      const text = value.toLowerCase();
+      return (
+        text.includes("retir") ||
+        text.includes("near retirement") ||
+        text.includes("near-retirement")
+      );
+    }
+
+    return false;
+  });
 }
 
 function extractPlayer(listing) {
@@ -91,6 +137,8 @@ function extractPlayer(listing) {
     listing.playerId ||
     null;
 
+  const isNearRetirement = detectNearRetirement(listing, player, metadata);
+
   return {
     id: String(listingId),
     playerId: playerId ? String(playerId) : null,
@@ -107,6 +155,8 @@ function extractPlayer(listing) {
 
     position: primaryPosition(positionText),
     positionText,
+
+    isNearRetirement,
 
     stats: {
       pace: metadata.pace ?? null,
@@ -328,6 +378,13 @@ async function scanMarketplace() {
 
       seenListings.add(player.id);
 
+      if (player.isNearRetirement) {
+        console.log(
+          `SKIPPED NEAR RETIREMENT: ${player.name} | ${player.overall} OVR | Age ${player.age} | Listed $${player.price}`
+        );
+        continue;
+      }
+
       if (!player.price || !player.overall || !player.age || !player.position) {
         console.log(`Skipping incomplete listing: ${player.name}`);
         continue;
@@ -374,6 +431,7 @@ async function startScanner() {
   console.log(`Min sales: ${RULES.minSales}`);
   console.log(`Min profit: $${RULES.minProfit}`);
   console.log(`Min ROI: ${RULES.minROI}%`);
+  console.log("Near retirement filter: ENABLED");
   console.log("Deduplication: Supabase mfl_alerted_listings");
   console.log("======================================");
 
