@@ -10,7 +10,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK;
 
-const SCAN_INTERVAL = Number(process.env.SCAN_INTERVAL || 30000);
+const SCAN_INTERVAL = Number(process.env.SCAN_INTERVAL || 10000);
 
 const API_BASE = "https://z519wdyajg.execute-api.us-east-1.amazonaws.com/prod";
 
